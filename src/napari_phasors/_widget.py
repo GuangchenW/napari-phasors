@@ -2452,7 +2452,7 @@ class WriterWidget(QWidget):
             return
 
         try:
-            import flimari.bridge as bridge
+            import flimari.core.bridge as bridge
 
             bridge.import_from_napari_phasors(data_list)
             show_info(

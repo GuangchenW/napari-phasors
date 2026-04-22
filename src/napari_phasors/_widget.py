@@ -2274,6 +2274,66 @@ class WriterWidget(QWidget):
 
         self._populate_combobox()
 
+        # --- FLIMari export --- #
+
+        flimari_info = QLabel("<b>Export to FLIMari:</b>")
+        self.main_layout.addWidget(flimari_info)
+
+        flimari_desc = QLabel(
+            "Sends phasor coordinates and per-pixel features of selected "
+            "layers to FLIMari for machine-learning analysis. "
+            "<b>FLIMari must be open for this to work!<b>"
+        )
+        flimari_desc.setWordWrap(True)
+        self.main_layout.addWidget(flimari_desc)
+
+        self.main_layout.addWidget(
+            QLabel("Select Phasor Layer(s) to Send:")
+        )
+
+        flimari_layer_layout = QHBoxLayout()
+        self.flimari_layer_combobox = CheckableComboBox(enable_primary_layer=False)
+        flimari_layer_layout.addWidget(self.flimari_layer_combobox, 1)
+
+        # 'All' label serves as select all button
+        # Same implementation as basic export
+        flimari_all_label = QLabel('<a href="all" style="color: gray;">All</a>')
+        flimari_all_label.setTextFormat(Qt.RichText)
+        flimari_all_label.setCursor(Qt.PointingHandCursor)
+        flimari_all_label.setToolTip("Select all phasor layers")
+        flimari_layer_layout.addWidget(flimari_all_label)
+
+        flimari_sep_label = QLabel("|")
+        flimari_sep_label.setStyleSheet("color: gray;")
+        flimari_layer_layout.addWidget(flimari_sep_label)
+
+        # 'None' label serves as unselect all button
+        # Same implementation as basic export
+        flimari_none_label = QLabel('<a href="none" style="color: gray;">None</a>')
+        flimari_none_label.setTextFormat(Qt.RichText)
+        flimari_none_label.setCursor(Qt.PointingHandCursor)
+        flimari_none_label.setToolTip("Deselect all phasor layers")
+        flimari_layer_layout.addWidget(flimari_none_label)
+
+        flimari_all_label.linkActivated.connect(
+            lambda _: self.flimari_layer_combobox.selectAll()
+        )
+        flimari_none_label.linkActivated.connect(
+            lambda _: self.flimari_layer_combobox.deselectAll()
+        )
+
+        self.main_layout.addLayout(flimari_layer_layout)
+
+        self.send_to_flimari_button = QPushButton("Send to FLIMari")
+        self.send_to_flimari_button.clicked.connect(self._send_to_flimari)
+        self.main_layout.addWidget(self.send_to_flimari_button)
+
+        # Dynamically update layer selections as layers change
+        self.viewer.layers.events.inserted.connect(self._populate_flimari_combobox)
+        self.viewer.layers.events.removed.connect(self._populate_flimari_combobox)
+
+        self._populate_flimari_combobox()
+
     def showEvent(self, event):
         """Float the dock widget on first show and center it on screen."""
         super().showEvent(event)
@@ -2337,6 +2397,71 @@ class WriterWidget(QWidget):
             self.export_layer_combobox.addItem(layer.name)
         # Update display to show placeholder if no items are checked
         self.export_layer_combobox._update_display_text()
+
+    def _populate_flimari_combobox(self):
+        """
+        Populate the FLIMari combobox with ONLY napari-phasor layers.
+        napari-phasor layers are assumed to be Image layers with G and S in metadata.
+        """
+        self.flimari_layer_combobox.clear()
+        phasor_layers = [
+            layer for layer in self.viewer.layers
+            if isinstance(layer, Image) and "G" in layer.metadata and "S" in layer.metadata
+        ]
+        for layer in phasor_layers:
+            self.flimari_layer_combobox.addItem(layer.name)
+        self.flimari_layer_combobox._update_display_text()
+
+    def _send_to_flimari(self):
+        """Package selected phasor layers and transfer them to FLIMari."""
+        selected = self.flimari_layer_combobox.checkedItems()
+        if not selected:
+            show_error("No phasor layer selected")
+            return
+
+        data_list = []
+        for name in selected:
+            layer = self.viewer.layers[name]
+            g = layer.metadata.get("G")
+            s = layer.metadata.get("S")
+            if g is None or s is None:
+                show_error(f"Layer '{name}' does not contain phasor coordinates.")
+                continue
+            settings = layer.metadata.get("settings", {})
+            filter_cfg = settings.get("filter", {})
+            data_list.append(
+                {
+                    "name": name,
+                    "channel": settings.get("channel", 0),
+                    "frequency": float(settings.get("frequency", 80.0)),
+                    "g": g,
+                    "s": s,
+                    "g_original": layer.metadata.get("G_original", g),
+                    "s_original": layer.metadata.get("S_original", s),
+                    "mean": layer.metadata.get("original_mean", None),
+                    "min_count": settings.get("threshold", 0),
+                    "max_count": settings.get("threshold_upper", None),
+                    "filter_size": filter_cfg.get("size", 3),
+                    "filter_repeat": filter_cfg.get("repeat", 0),
+                }
+            )
+
+        if not data_list:
+            return
+
+        try:
+            import flimari.bridge as bridge
+
+            bridge.import_from_napari_phasors(data_list)
+            show_info(
+                f"Sent {len(data_list)} layer(s) to FLIMari."
+            )
+        except ImportError:
+            show_error(
+                "FLIMari is not installed."
+            )
+        except RuntimeError as exc:
+            show_error(str(exc))
 
     def _save_file(
         self,
